@@ -26,8 +26,28 @@ function getEngineDir(): string {
   return path.join(__dirname, '..', 'engine');
 }
 
+function getExeDir(): string {
+  if (!app.isPackaged) {
+    return process.cwd();
+  }
+  if (process.env.PORTABLE_EXECUTABLE_DIR) {
+    return process.env.PORTABLE_EXECUTABLE_DIR;
+  }
+  if (process.platform === 'darwin') {
+    // MusicSplitter.app/Contents/MacOS/MusicSplitter -> folder containing .app
+    return path.resolve(path.dirname(process.execPath), '../../..');
+  }
+  return path.dirname(process.execPath);
+}
+
 function getManagedVenvDir(): string {
-  return path.join(app.getPath('userData'), 'py-env');
+  const exeDir = getExeDir();
+  try {
+    fs.accessSync(exeDir, fs.constants.W_OK);
+    return path.join(exeDir, 'py-env');
+  } catch {
+    return path.join(app.getPath('userData'), 'py-env');
+  }
 }
 
 function getVenvPython(venvDir: string): string {
@@ -162,6 +182,7 @@ ipcMain.handle('check-environment', async () => {
     ready: Boolean(res.pythonPath),
     pythonPath: res.pythonPath,
     systemPython: res.systemPython,
+    venvDir: getManagedVenvDir(),
     ffmpegPath: FFMPEG_BIN,
     hasGpu: res.hasGpu,
     gpuName: res.gpuName

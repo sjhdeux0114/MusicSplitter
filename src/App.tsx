@@ -727,6 +727,11 @@ export default function App() {
                 <p className="text-xs text-zinc-400 mt-1">
                   오프라인 고품질 트랙 분리를 위해 Meta Demucs &amp; PyTorch 환경을 구성합니다.
                 </p>
+                {envStatus?.venvDir && (
+                  <p className="text-[11px] font-mono text-zinc-400 mt-1.5 bg-[#0c0d11] px-2.5 py-1 rounded border border-daw-border break-all">
+                    설치 경로: {envStatus.venvDir}
+                  </p>
+                )}
               </div>
               {!setupRunning && (
                 <button

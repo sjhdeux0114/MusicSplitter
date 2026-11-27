@@ -14,6 +14,7 @@ export interface EnvStatus {
   ready: boolean;
   pythonPath: string | null;
   systemPython: string | null;
+  venvDir: string;
   ffmpegPath: string;
   hasGpu: boolean;
   gpuName?: string;
