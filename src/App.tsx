@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertCircle,
   CheckCircle2,
+  ChevronDown,
   Cpu,
   Download,
   FileAudio,
@@ -113,6 +114,9 @@ export default function App() {
   const [masterVolume, setMasterVolume] = useState(1.0);
   const [pitchSemitones, setPitchSemitones] = useState(0);
   const [isPitchShifting, setIsPitchShifting] = useState(false);
+  const [isConvertingMidi, setIsConvertingMidi] = useState(false);
+  const [midiProgressMsg, setMidiProgressMsg] = useState<string | null>(null);
+  const [midiMenuOpen, setMidiMenuOpen] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
 
   const engineRef = useRef<MultiTrackAudioEngine | null>(null);
@@ -144,9 +148,14 @@ export default function App() {
       setSetupLogs((prev) => [...prev.slice(-80), line]);
     });
 
+    const unsubMidi = window.musicSplitter.onMidiProgress((ev) => {
+      if (ev.message) setMidiProgressMsg(ev.message);
+    });
+
     return () => {
       unsubProgress();
       unsubSetup();
+      unsubMidi();
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
       engineRef.current?.dispose();
     };
@@ -454,6 +463,72 @@ export default function App() {
     });
     if (res.ok) showToast('커스텀 믹스 내보내기 완료!');
     else if (res.error) setErrorMsg(res.error);
+  };
+
+  const handleConvertSingleMidi = async (track: StemTrackState) => {
+    if (isConvertingMidi) return;
+    setErrorMsg(null);
+    setIsConvertingMidi(true);
+    setMidiProgressMsg(`${track.name} MIDI 변환 중...`);
+    try {
+      const base = inputPath ? inputPath.split(/[\\/]/).pop()?.replace(/\.[^.]+$/, '') : 'track';
+      const keySuffix =
+        pitchSemitones !== 0 && track.id !== 'drums'
+          ? `_${pitchSemitones > 0 ? `+${pitchSemitones}` : pitchSemitones}key`
+          : '';
+      const res = await window.musicSplitter.convertStemToMidi({
+        sourcePath: track.path,
+        stemId: track.id,
+        defaultName: `${base}_${track.id}${keySuffix}`,
+        pitchSemitones,
+        sessionDir: sessionDir || undefined
+      });
+      if (res.ok) {
+        showToast(`${track.name} MIDI 저장 완료! (${res.noteCount ?? 0}개 노트 · ${res.bpm ?? 120} BPM)`);
+      } else if (res.error) {
+        setErrorMsg(res.error);
+      }
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : 'MIDI 변환 중 오류가 발생했습니다.');
+    } finally {
+      setIsConvertingMidi(false);
+      setMidiProgressMsg(null);
+    }
+  };
+
+  const handleConvertAllMidi = async (midiMode: 'combined' | 'individual') => {
+    if (tracks.length === 0 || isConvertingMidi) return;
+    setMidiMenuOpen(false);
+    setErrorMsg(null);
+    setIsConvertingMidi(true);
+    setMidiProgressMsg('MIDI 변환 준비 중...');
+    try {
+      const base = inputPath ? inputPath.split(/[\\/]/).pop()?.replace(/\.[^.]+$/, '') : 'stems';
+      const keySuffix =
+        pitchSemitones !== 0 ? `_${pitchSemitones > 0 ? `+${pitchSemitones}` : pitchSemitones}key` : '';
+      const res = await window.musicSplitter.convertStemsToMidi({
+        stems: tracks.map((t) => ({ id: t.id, name: t.name, path: t.path })),
+        mode: midiMode,
+        defaultName: `${base || 'stems'}${keySuffix}`,
+        pitchSemitones,
+        sessionDir: sessionDir || undefined
+      });
+      if (res.ok) {
+        if (midiMode === 'individual' && res.targetDir) {
+          showToast(`모든 스템 MIDI 저장 완료! (${res.noteCount ?? 0}개 노트)`);
+          await window.musicSplitter.openFolder(res.targetDir);
+        } else {
+          showToast(`통합 멀티트랙 MIDI 저장 완료! (${res.noteCount ?? 0}개 노트 · ${res.bpm ?? 120} BPM)`);
+        }
+      } else if (res.error) {
+        setErrorMsg(res.error);
+      }
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : 'MIDI 변환 중 오류가 발생했습니다.');
+    } finally {
+      setIsConvertingMidi(false);
+      setMidiProgressMsg(null);
+    }
   };
 
   const fileName = inputPath ? inputPath.split(/[\\/]/).pop() : null;
@@ -779,6 +854,54 @@ export default function App() {
                   <span>작업 폴더</span>
                 </button>
               )}
+              <div className="relative">
+                <button
+                  onClick={() => setMidiMenuOpen((prev) => !prev)}
+                  disabled={tracks.length === 0 || isConvertingMidi}
+                  className="px-3 py-1.5 rounded-lg text-xs bg-amber-500/15 hover:bg-amber-500/25 disabled:opacity-40 border border-amber-500/35 text-amber-200 font-medium flex items-center gap-1.5 transition-colors"
+                  title="분리된 스템을 MIDI(.mid) 파일로 변환"
+                >
+                  {isConvertingMidi ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-400" />
+                  ) : (
+                    <Music2 className="w-3.5 h-3.5 text-amber-400" />
+                  )}
+                  <span>{isConvertingMidi ? midiProgressMsg || 'MIDI 변환 중...' : 'MIDI 변환'}</span>
+                  {!isConvertingMidi && <ChevronDown className="w-3 h-3 opacity-75" />}
+                </button>
+                {midiMenuOpen && !isConvertingMidi && (
+                  <>
+                    <div
+                      className="fixed inset-0 z-30"
+                      onClick={() => setMidiMenuOpen(false)}
+                    />
+                    <div className="absolute right-0 mt-1.5 w-60 rounded-xl bg-daw-panel border border-daw-border shadow-2xl p-1.5 z-40 flex flex-col gap-1">
+                      <button
+                        onClick={() => handleConvertAllMidi('combined')}
+                        className="text-left px-3 py-2 rounded-lg hover:bg-daw-hover transition-colors"
+                      >
+                        <div className="text-xs font-semibold text-zinc-100">
+                          통합 멀티트랙 MIDI (.mid)
+                        </div>
+                        <div className="text-[11px] text-zinc-400 mt-0.5">
+                          모든 스템을 하나의 MIDI 파일로 합쳐 저장
+                        </div>
+                      </button>
+                      <button
+                        onClick={() => handleConvertAllMidi('individual')}
+                        className="text-left px-3 py-2 rounded-lg hover:bg-daw-hover transition-colors"
+                      >
+                        <div className="text-xs font-semibold text-zinc-100">
+                          트랙별 개별 MIDI (.mid)
+                        </div>
+                        <div className="text-[11px] text-zinc-400 mt-0.5">
+                          각 스템을 폴더에 개별 .mid 파일로 저장
+                        </div>
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
               <button
                 onClick={handleExportCustomMix}
                 disabled={tracks.length === 0}
@@ -843,6 +966,8 @@ export default function App() {
                     onVolumeChange={handleVolumeChange}
                     onSeek={handleSeek}
                     onExportSingle={handleExportSingle}
+                    onConvertMidi={handleConvertSingleMidi}
+                    midiBusy={isConvertingMidi}
                   />
                 );
               })

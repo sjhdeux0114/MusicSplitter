@@ -94,6 +94,39 @@ declare global {
         pitchSemitones?: number;
         sessionDir?: string;
       }) => Promise<{ ok: boolean; savedPath?: string; canceled?: boolean; error?: string }>;
+      convertStemToMidi: (params: {
+        sourcePath: string;
+        stemId: string;
+        defaultName: string;
+        pitchSemitones?: number;
+        sessionDir?: string;
+      }) => Promise<{
+        ok: boolean;
+        savedPath?: string;
+        noteCount?: number;
+        bpm?: number;
+        canceled?: boolean;
+        error?: string;
+      }>;
+      convertStemsToMidi: (params: {
+        stems: Array<{ id: string; name: string; path: string }>;
+        mode: 'individual' | 'combined';
+        defaultName: string;
+        pitchSemitones?: number;
+        sessionDir?: string;
+      }) => Promise<{
+        ok: boolean;
+        savedPath?: string;
+        targetDir?: string;
+        files?: string[];
+        noteCount?: number;
+        bpm?: number;
+        canceled?: boolean;
+        error?: string;
+      }>;
+      onMidiProgress: (
+        cb: (ev: { type: string; percent?: number; message?: string }) => void
+      ) => () => void;
       openFolder: (targetPath: string) => Promise<void>;
     };
   }

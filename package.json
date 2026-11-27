@@ -1,6 +1,6 @@
 {
   "name": "musicsplitter",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Offline AI Music Stem Splitter (Vocals, Drums, Bass, Guitar, Piano, Other) inspired by Apple Logic Pro Stem Splitter",
   "main": "dist-electron/main.js",
   "author": "sjh",

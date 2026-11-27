@@ -23,6 +23,8 @@ interface StemTrackRowProps {
   onVolumeChange: (id: string, volume: number) => void;
   onSeek: (ratio: number) => void;
   onExportSingle: (track: StemTrackState) => void;
+  onConvertMidi: (track: StemTrackState) => void;
+  midiBusy?: boolean;
 }
 
 function getStemIcon(id: string) {
@@ -64,7 +66,9 @@ export const StemTrackRow: React.FC<StemTrackRowProps> = ({
   onToggleSolo,
   onVolumeChange,
   onSeek,
-  onExportSingle
+  onExportSingle,
+  onConvertMidi,
+  midiBusy = false
 }) => {
   const volPercent = Math.round(track.volume * 100);
   const isPitchApplied = pitchSemitones !== 0 && track.id !== 'drums';
@@ -102,13 +106,23 @@ export const StemTrackRow: React.FC<StemTrackRowProps> = ({
             </div>
           </div>
 
-          <button
-            onClick={() => onExportSingle(track)}
-            className="p-1.5 rounded-lg text-zinc-400 hover:text-white hover:bg-daw-hover transition-colors"
-            title="이 트랙만 저장"
-          >
-            <Download className="w-4 h-4" />
-          </button>
+          <div className="flex items-center gap-1 shrink-0">
+            <button
+              onClick={() => onConvertMidi(track)}
+              disabled={midiBusy}
+              className="px-1.5 py-1 rounded-md text-[10px] font-mono font-bold text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 disabled:opacity-40 transition-colors"
+              title="이 트랙을 MIDI(.mid) 파일로 변환 저장"
+            >
+              MID
+            </button>
+            <button
+              onClick={() => onExportSingle(track)}
+              className="p-1.5 rounded-lg text-zinc-400 hover:text-white hover:bg-daw-hover transition-colors"
+              title="이 트랙만 저장"
+            >
+              <Download className="w-4 h-4" />
+            </button>
+          </div>
         </div>
 
         {/* M / S / Volume Fader */}

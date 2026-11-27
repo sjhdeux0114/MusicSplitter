@@ -101,5 +101,46 @@ contextBridge.exposeInMainWorld('musicSplitter', {
   }): Promise<{ ok: boolean; savedPath?: string; canceled?: boolean; error?: string }> =>
     ipcRenderer.invoke('export-custom-mix', params),
 
+  convertStemToMidi: (params: {
+    sourcePath: string;
+    stemId: string;
+    defaultName: string;
+    pitchSemitones?: number;
+    sessionDir?: string;
+  }): Promise<{
+    ok: boolean;
+    savedPath?: string;
+    noteCount?: number;
+    bpm?: number;
+    canceled?: boolean;
+    error?: string;
+  }> => ipcRenderer.invoke('convert-stem-to-midi', params),
+
+  convertStemsToMidi: (params: {
+    stems: Array<{ id: string; name: string; path: string }>;
+    mode: 'individual' | 'combined';
+    defaultName: string;
+    pitchSemitones?: number;
+    sessionDir?: string;
+  }): Promise<{
+    ok: boolean;
+    savedPath?: string;
+    targetDir?: string;
+    files?: string[];
+    noteCount?: number;
+    bpm?: number;
+    canceled?: boolean;
+    error?: string;
+  }> => ipcRenderer.invoke('convert-stems-to-midi', params),
+
+  onMidiProgress: (cb: (ev: { type: string; percent?: number; message?: string }) => void) => {
+    const listener = (
+      _: Electron.IpcRendererEvent,
+      ev: { type: string; percent?: number; message?: string }
+    ) => cb(ev);
+    ipcRenderer.on('midi-progress', listener);
+    return () => ipcRenderer.removeListener('midi-progress', listener);
+  },
+
   openFolder: (targetPath: string): Promise<void> => ipcRenderer.invoke('open-folder', targetPath)
 });

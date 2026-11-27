@@ -1,6 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from 'electron';
 import { ChildProcess, execFile, spawn } from 'child_process';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { promisify } from 'util';
 import ffmpegStatic from 'ffmpeg-static';
@@ -192,6 +193,55 @@ app.whenReady().then(() => {
   });
 });
 
+function cleanupTempFiles(): void {
+  const sessionsDir = path.join(app.getPath('userData'), 'sessions');
+  try {
+    if (fs.existsSync(sessionsDir)) {
+      for (const entry of fs.readdirSync(sessionsDir)) {
+        try {
+          fs.rmSync(path.join(sessionsDir, entry), {
+            recursive: true,
+            force: true,
+            maxRetries: 3,
+            retryDelay: 100
+          });
+        } catch {
+          // ignore locked entry so other old sessions still get deleted
+        }
+      }
+      try {
+        if (fs.readdirSync(sessionsDir).length === 0) {
+          fs.rmdirSync(sessionsDir);
+        }
+      } catch {
+        // ignore
+      }
+    }
+  } catch {
+    // ignore cleanup errors
+  }
+
+  try {
+    const tmpDir = os.tmpdir();
+    for (const entry of fs.readdirSync(tmpDir)) {
+      if (entry.startsWith('musicsplitter_')) {
+        try {
+          fs.rmSync(path.join(tmpDir, entry), {
+            recursive: true,
+            force: true,
+            maxRetries: 2,
+            retryDelay: 50
+          });
+        } catch {
+          // ignore
+        }
+      }
+    }
+  } catch {
+    // ignore tmpdir scan errors
+  }
+}
+
 app.on('window-all-closed', () => {
   if (activeSeparationProc) {
     activeSeparationProc.kill();
@@ -200,6 +250,14 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit();
   }
+});
+
+app.on('will-quit', () => {
+  if (activeSeparationProc) {
+    activeSeparationProc.kill();
+    activeSeparationProc = null;
+  }
+  cleanupTempFiles();
 });
 
 // IPC Handlers
@@ -722,6 +780,214 @@ ipcMain.handle(
 
     await execFileAsync(FFMPEG_BIN, args, { timeout: 180000 });
     return { ok: true, savedPath: filePath };
+  }
+);
+
+async function runMidiConverter(args: string[]): Promise<{
+  ok: boolean;
+  files?: string[];
+  noteCount?: number;
+  bpm?: number;
+  error?: string;
+}> {
+  const env = await resolveReadyPython();
+  if (!env.pythonPath) {
+    return {
+      ok: false,
+      error: 'Python AI 엔진이 준비되지 않았습니다. 먼저 환경을 설정해 주세요.'
+    };
+  }
+
+  const scriptPath = path.join(getEngineDir(), 'midi_convert.py');
+  return new Promise((resolve) => {
+    const proc = spawn(env.pythonPath!, [scriptPath, ...args], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
+    });
+
+    let lineBuf = '';
+    let errBuf = '';
+    let resolved = false;
+
+    proc.stdout.on('data', (chunk: Buffer) => {
+      lineBuf += chunk.toString('utf8');
+      const lines = lineBuf.split('\n');
+      lineBuf = lines.pop() || '';
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        try {
+          const parsed = JSON.parse(trimmed);
+          if (parsed.type === 'progress') {
+            mainWindow?.webContents.send('midi-progress', parsed);
+          } else if (parsed.type === 'done' && !resolved) {
+            resolved = true;
+            resolve({
+              ok: true,
+              files: parsed.files,
+              noteCount: parsed.noteCount,
+              bpm: parsed.bpm
+            });
+          } else if (parsed.type === 'error' && !resolved) {
+            resolved = true;
+            resolve({ ok: false, error: parsed.message || 'MIDI 변환 중 오류가 발생했습니다.' });
+          }
+        } catch {
+          // ignore non-JSON lines
+        }
+      }
+    });
+
+    proc.stderr.on('data', (chunk: Buffer) => {
+      errBuf += chunk.toString('utf8');
+      if (errBuf.length > 4000) errBuf = errBuf.slice(-4000);
+    });
+
+    proc.on('close', (code) => {
+      if (!resolved) {
+        resolved = true;
+        resolve({
+          ok: false,
+          error:
+            code === 0
+              ? 'MIDI 변환 결과를 받지 못했습니다.'
+              : `MIDI 변환 프로세스가 종료되었습니다 (code ${code}). ${errBuf.slice(-300)}`
+        });
+      }
+    });
+  });
+}
+
+ipcMain.handle(
+  'convert-stem-to-midi',
+  async (
+    _ev,
+    params: {
+      sourcePath: string;
+      stemId: string;
+      defaultName: string;
+      pitchSemitones?: number;
+      sessionDir?: string;
+    }
+  ) => {
+    if (!mainWindow) return { ok: false, canceled: true };
+    const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
+      title: 'MIDI 파일로 변환 저장',
+      defaultPath: `${params.defaultName}.mid`,
+      filters: [{ name: 'MIDI File', extensions: ['mid', 'midi'] }]
+    });
+    if (canceled || !filePath) return { ok: false, canceled: true };
+
+    const effectiveSource = await getOrCreatePitchedStemFile(
+      params.sourcePath,
+      params.stemId,
+      params.pitchSemitones || 0,
+      params.sessionDir
+    );
+
+    const stemsPayload = JSON.stringify([{ id: params.stemId, path: effectiveSource }]);
+    const res = await runMidiConverter([
+      '--mode',
+      'single',
+      '--out',
+      filePath,
+      '--stems',
+      stemsPayload
+    ]);
+    if (!res.ok) return { ok: false, error: res.error };
+    return { ok: true, savedPath: filePath, noteCount: res.noteCount, bpm: res.bpm };
+  }
+);
+
+ipcMain.handle(
+  'convert-stems-to-midi',
+  async (
+    _ev,
+    params: {
+      stems: Array<{ id: string; name: string; path: string }>;
+      mode: 'individual' | 'combined';
+      defaultName: string;
+      pitchSemitones?: number;
+      sessionDir?: string;
+    }
+  ) => {
+    if (!mainWindow) return { ok: false, canceled: true };
+    if (params.stems.length === 0) {
+      return { ok: false, error: '변환할 스템이 없습니다.' };
+    }
+
+    const semitones = params.pitchSemitones || 0;
+
+    if (params.mode === 'combined') {
+      const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
+        title: '통합 멀티트랙 MIDI 저장',
+        defaultPath: `${params.defaultName}_all_stems.mid`,
+        filters: [{ name: 'MIDI File', extensions: ['mid', 'midi'] }]
+      });
+      if (canceled || !filePath) return { ok: false, canceled: true };
+
+      const resolved = await Promise.all(
+        params.stems.map(async (s) => ({
+          id: s.id,
+          path: await getOrCreatePitchedStemFile(s.path, s.id, semitones, params.sessionDir)
+        }))
+      );
+      const res = await runMidiConverter([
+        '--mode',
+        'combined',
+        '--out',
+        filePath,
+        '--stems',
+        JSON.stringify(resolved)
+      ]);
+      if (!res.ok) return { ok: false, error: res.error };
+      return { ok: true, savedPath: filePath, noteCount: res.noteCount, bpm: res.bpm };
+    }
+
+    const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
+      title: '개별 MIDI 파일들을 저장할 폴더 선택',
+      properties: ['openDirectory', 'createDirectory']
+    });
+    if (canceled || filePaths.length === 0) return { ok: false, canceled: true };
+
+    const targetDir = filePaths[0];
+    const resolved = await Promise.all(
+      params.stems.map(async (s) => {
+        const effectivePath = await getOrCreatePitchedStemFile(
+          s.path,
+          s.id,
+          semitones,
+          params.sessionDir
+        );
+        const base = path.basename(s.path, path.extname(s.path));
+        const keySuffix =
+          semitones !== 0 && s.id !== 'drums'
+            ? `_${semitones > 0 ? `+${semitones}` : semitones}key`
+            : '';
+        return {
+          id: s.id,
+          path: effectivePath,
+          out_path: path.join(targetDir, `${base}${keySuffix}.mid`)
+        };
+      })
+    );
+
+    const res = await runMidiConverter([
+      '--mode',
+      'individual',
+      '--out-dir',
+      targetDir,
+      '--stems',
+      JSON.stringify(resolved)
+    ]);
+    if (!res.ok) return { ok: false, error: res.error };
+    return {
+      ok: true,
+      targetDir,
+      files: res.files,
+      noteCount: res.noteCount,
+      bpm: res.bpm
+    };
   }
 );
 
