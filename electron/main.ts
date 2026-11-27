@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from 'electron';
 import { ChildProcess, execFile, spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
@@ -128,13 +128,41 @@ async function resolveReadyPython(): Promise<{
   return { pythonPath: null, systemPython: sysPy, hasGpu: false };
 }
 
+function getIconPath(): string {
+  const iconName = process.platform === 'win32' ? 'icon.ico' : 'icon.png';
+  if (app.isPackaged) {
+    return path.join(__dirname, '..', 'build', iconName);
+  }
+  return path.join(__dirname, '..', 'build', iconName);
+}
+
+async function detectNvidiaGpu(): Promise<string | null> {
+  if (process.platform === 'darwin') return null;
+  try {
+    const { stdout } = await execFileAsync(
+      'nvidia-smi',
+      ['--query-gpu=name', '--format=csv,noheader'],
+      { timeout: 5000 }
+    );
+    const name = stdout.trim().split('\n')[0]?.trim();
+    return name || null;
+  } catch {
+    return null;
+  }
+}
+
 function createWindow(): void {
+  if (process.platform !== 'darwin') {
+    Menu.setApplicationMenu(null);
+  }
+
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 840,
     minWidth: 1024,
     minHeight: 700,
     backgroundColor: '#111216',
+    icon: getIconPath(),
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -210,32 +238,38 @@ ipcMain.handle('setup-environment', async () => {
       await execFileAsync(sysPy, ['-m', 'venv', venvDir], { timeout: 60000 });
     }
 
-    const reqPath = path.join(getEngineDir(), 'requirements.txt');
-    sendLog('AI 음원 분리 엔진(Demucs, PyTorch) 설치 중... (최초 1회, 수 분 소요될 수 있습니다)');
+    const runPip = (pipArgs: string[]) =>
+      new Promise<void>((resolve, reject) => {
+        const proc = spawn(venvPy, ['-m', 'pip', ...pipArgs], {
+          stdio: ['ignore', 'pipe', 'pipe']
+        });
+        proc.stdout.on('data', (d) => sendLog(d.toString()));
+        proc.stderr.on('data', (d) => sendLog(d.toString()));
+        proc.on('close', (code) => {
+          if (code === 0) resolve();
+          else reject(new Error(`pip ${pipArgs[0]} failed with code ${code}`));
+        });
+      });
 
-    await new Promise<void>((resolve, reject) => {
-      const proc = spawn(venvPy, ['-m', 'pip', 'install', '--upgrade', 'pip'], {
-        stdio: ['ignore', 'pipe', 'pipe']
-      });
-      proc.stdout.on('data', (d) => sendLog(d.toString()));
-      proc.stderr.on('data', (d) => sendLog(d.toString()));
-      proc.on('close', (code) => {
-        if (code === 0) resolve();
-        else reject(new Error(`pip upgrade failed with code ${code}`));
-      });
-    });
+    await runPip(['install', '--upgrade', 'pip']);
 
-    await new Promise<void>((resolve, reject) => {
-      const proc = spawn(venvPy, ['-m', 'pip', 'install', '-r', reqPath], {
-        stdio: ['ignore', 'pipe', 'pipe']
-      });
-      proc.stdout.on('data', (d) => sendLog(d.toString()));
-      proc.stderr.on('data', (d) => sendLog(d.toString()));
-      proc.on('close', (code) => {
-        if (code === 0) resolve();
-        else reject(new Error(`pip install failed with code ${code}`));
-      });
-    });
+    const nvidiaGpu = await detectNvidiaGpu();
+    if (nvidiaGpu) {
+      sendLog(`NVIDIA GPU 감지됨 (${nvidiaGpu}) → CUDA 12.4 GPU 가속 PyTorch를 설치합니다...`);
+      await runPip([
+        'install',
+        'torch',
+        'torchaudio',
+        '--index-url',
+        'https://download.pytorch.org/whl/cu124'
+      ]);
+      sendLog('Demucs 및 오디오 라이브러리 설치 중...');
+      await runPip(['install', 'demucs>=4.0.1', 'soundfile>=0.12.1', 'numpy>=1.24.0']);
+    } else {
+      const reqPath = path.join(getEngineDir(), 'requirements.txt');
+      sendLog('AI 음원 분리 엔진(Demucs, PyTorch) 설치 중... (최초 1회, 수 분 소요될 수 있습니다)');
+      await runPip(['install', '-r', reqPath]);
+    }
 
     sendLog('설치 완료!');
     return { ok: true };
@@ -244,6 +278,19 @@ ipcMain.handle('setup-environment', async () => {
     sendLog(`오류: ${msg}`);
     return { ok: false, error: msg };
   }
+});
+
+ipcMain.handle('reset-environment', async () => {
+  const targets = [getManagedVenvDir(), path.join(app.getPath('userData'), 'py-env')];
+  const uniqueTargets = Array.from(new Set(targets));
+  const removed: string[] = [];
+  for (const dir of uniqueTargets) {
+    if (fs.existsSync(dir)) {
+      await fs.promises.rm(dir, { recursive: true, force: true });
+      removed.push(dir);
+    }
+  }
+  return { ok: true, removed };
 });
 
 ipcMain.handle('select-audio-file', async () => {

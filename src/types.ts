@@ -55,6 +55,7 @@ declare global {
     musicSplitter: {
       checkEnvironment: () => Promise<EnvStatus>;
       setupEnvironment: () => Promise<{ ok: boolean; error?: string }>;
+      resetEnvironment: () => Promise<{ ok: boolean; removed: string[] }>;
       onSetupLog: (cb: (line: string) => void) => () => void;
       selectAudioFile: () => Promise<string | null>;
       getAudioInfo: (filePath: string) => Promise<AudioInfo>;

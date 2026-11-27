@@ -42,6 +42,7 @@ export interface SeparationProgressEvent {
 contextBridge.exposeInMainWorld('musicSplitter', {
   checkEnvironment: (): Promise<EnvStatus> => ipcRenderer.invoke('check-environment'),
   setupEnvironment: (): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke('setup-environment'),
+  resetEnvironment: (): Promise<{ ok: boolean; removed: string[] }> => ipcRenderer.invoke('reset-environment'),
   onSetupLog: (cb: (line: string) => void) => {
     const listener = (_: Electron.IpcRendererEvent, line: string) => cb(line);
     ipcRenderer.on('setup-log', listener);

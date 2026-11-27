@@ -211,6 +211,22 @@ export default function App() {
     }
   };
 
+  const handleResetEnvironment = async () => {
+    setSetupRunning(true);
+    setSetupError(null);
+    setSetupLogs(['기존 가상환경을 삭제하는 중...']);
+    const res = await window.musicSplitter.resetEnvironment();
+    const status = await window.musicSplitter.checkEnvironment();
+    setEnvStatus(status);
+    setSetupRunning(false);
+    if (res.removed.length > 0) {
+      setSetupLogs((prev) => [...prev, `삭제 완료: ${res.removed.join(', ')}`]);
+      showToast('기존 가상환경을 삭제했습니다.');
+    } else {
+      setSetupLogs((prev) => [...prev, '삭제할 가상환경 폴더가 없습니다.']);
+    }
+  };
+
   const handleStartSeparation = async () => {
     if (!inputPath) return;
     setErrorMsg(null);
@@ -432,10 +448,14 @@ export default function App() {
         {/* Right Environment Status */}
         <div className="flex items-center gap-2">
           {envStatus?.ready ? (
-            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/25 text-emerald-400 text-xs">
+            <button
+              onClick={() => setSetupOpen(true)}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/25 text-emerald-400 text-xs hover:bg-emerald-500/20 transition-colors"
+              title="AI 엔진 및 GPU 설정 관리"
+            >
               <Cpu className="w-3.5 h-3.5" />
               <span>{envStatus.gpuName || 'CPU'}</span>
-            </div>
+            </button>
           ) : (
             <button
               onClick={() => setSetupOpen(true)}
@@ -755,23 +775,32 @@ export default function App() {
               </div>
             )}
 
-            <div className="flex items-center justify-end gap-2 pt-2">
-              {!setupRunning && (
-                <button
-                  onClick={() => setSetupOpen(false)}
-                  className="px-4 py-2 rounded-lg text-xs text-zinc-400 hover:text-white bg-daw-surface border border-daw-border"
-                >
-                  나중에
-                </button>
-              )}
+            <div className="flex items-center justify-between gap-2 pt-2">
               <button
-                onClick={handleRunSetup}
+                onClick={handleResetEnvironment}
                 disabled={setupRunning}
-                className="px-4 py-2 rounded-lg text-xs font-semibold bg-blue-600 hover:bg-blue-500 disabled:bg-zinc-700 text-white flex items-center gap-2"
+                className="px-3 py-2 rounded-lg text-xs text-red-400 hover:text-red-300 hover:bg-red-500/10 border border-red-500/30 disabled:opacity-40"
               >
-                {setupRunning && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-                <span>{setupRunning ? '설치 진행 중...' : '원클릭 자동 설치'}</span>
+                기존 가상환경 삭제
               </button>
+              <div className="flex items-center gap-2">
+                {!setupRunning && (
+                  <button
+                    onClick={() => setSetupOpen(false)}
+                    className="px-4 py-2 rounded-lg text-xs text-zinc-400 hover:text-white bg-daw-surface border border-daw-border"
+                  >
+                    닫기
+                  </button>
+                )}
+                <button
+                  onClick={handleRunSetup}
+                  disabled={setupRunning}
+                  className="px-4 py-2 rounded-lg text-xs font-semibold bg-blue-600 hover:bg-blue-500 disabled:bg-zinc-700 text-white flex items-center gap-2"
+                >
+                  {setupRunning && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                  <span>{setupRunning ? '설치 진행 중...' : '원클릭 자동 설치 (GPU 지원)'}</span>
+                </button>
+              </div>
             </div>
           </div>
         </div>
