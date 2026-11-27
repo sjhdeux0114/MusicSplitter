@@ -68,19 +68,31 @@ declare global {
       }) => Promise<{ ok: boolean; stems?: StemResult[]; outputDir?: string; error?: string }>;
       cancelSeparation: () => Promise<void>;
       onSeparationProgress: (cb: (ev: SeparationProgressEvent) => void) => () => void;
+      pitchShiftStems: (params: {
+        stems: Array<{ id: string; path: string }>;
+        semitones: number;
+        sessionDir?: string;
+      }) => Promise<{ ok: boolean; results?: Array<{ id: string; path: string }>; error?: string }>;
       exportSingleStem: (params: {
         sourcePath: string;
         defaultName: string;
         format: AudioFormat;
+        stemId?: string;
+        pitchSemitones?: number;
+        sessionDir?: string;
       }) => Promise<{ ok: boolean; savedPath?: string; canceled?: boolean }>;
       exportAllStems: (params: {
         stems: StemResult[];
         format: AudioFormat;
+        pitchSemitones?: number;
+        sessionDir?: string;
       }) => Promise<{ ok: boolean; targetDir?: string; canceled?: boolean }>;
       exportCustomMix: (params: {
-        stems: Array<{ path: string; volume: number }>;
+        stems: Array<{ id?: string; path: string; volume: number }>;
         format: AudioFormat;
         defaultName: string;
+        pitchSemitones?: number;
+        sessionDir?: string;
       }) => Promise<{ ok: boolean; savedPath?: string; canceled?: boolean; error?: string }>;
       openFolder: (targetPath: string) => Promise<void>;
     };

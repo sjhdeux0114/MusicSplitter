@@ -8,8 +8,11 @@ import {
   FolderOpen,
   Layers,
   Loader2,
+  Minus,
+  Music2,
   Pause,
   Play,
+  Plus,
   Sliders,
   Sparkles,
   Square,
@@ -108,10 +111,14 @@ export default function App() {
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [masterVolume, setMasterVolume] = useState(1.0);
+  const [pitchSemitones, setPitchSemitones] = useState(0);
+  const [isPitchShifting, setIsPitchShifting] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
 
   const engineRef = useRef<MultiTrackAudioEngine | null>(null);
   const rafRef = useRef<number | null>(null);
+  const appliedPitchRef = useRef<number>(0);
+  const pitchReqIdRef = useRef<number>(0);
 
   const showToast = useCallback((msg: string) => {
     setToastMsg(msg);
@@ -173,6 +180,56 @@ export default function App() {
       eng.updateTrack(t.id, t.volume, t.pan, audible);
     }
   }, [tracks, anySolo, masterVolume]);
+
+  // Apply pitch shift to non-drum tracks when key changes
+  useEffect(() => {
+    if (tracks.length === 0) return;
+    if (pitchSemitones === appliedPitchRef.current) return;
+
+    const nonDrumTracks = tracks.filter((t) => t.id !== 'drums');
+    if (nonDrumTracks.length === 0) {
+      appliedPitchRef.current = pitchSemitones;
+      return;
+    }
+
+    const timer = setTimeout(async () => {
+      const reqId = ++pitchReqIdRef.current;
+      setIsPitchShifting(true);
+      try {
+        const res = await window.musicSplitter.pitchShiftStems({
+          stems: nonDrumTracks.map((t) => ({ id: t.id, path: t.path })),
+          semitones: pitchSemitones,
+          sessionDir: sessionDir || undefined
+        });
+        if (reqId !== pitchReqIdRef.current) return;
+        if (!res.ok || !res.results) {
+          setErrorMsg(res.error || '키 조절 처리 중 오류가 발생했습니다.');
+          return;
+        }
+
+        const buffers = await Promise.all(
+          res.results.map(async (r) => ({
+            id: r.id,
+            buffer: await window.musicSplitter.readAudioBuffer(r.path)
+          }))
+        );
+        if (reqId !== pitchReqIdRef.current) return;
+
+        await engineRef.current?.updateTrackBuffers(buffers);
+        appliedPitchRef.current = pitchSemitones;
+      } catch (err) {
+        if (reqId === pitchReqIdRef.current) {
+          setErrorMsg(err instanceof Error ? err.message : '키 조절 처리 중 오류가 발생했습니다.');
+        }
+      } finally {
+        if (reqId === pitchReqIdRef.current) {
+          setIsPitchShifting(false);
+        }
+      }
+    }, 250);
+
+    return () => clearTimeout(timer);
+  }, [pitchSemitones, tracks, sessionDir]);
 
   const loadSelectedFile = async (filePath: string) => {
     setErrorMsg(null);
@@ -277,6 +334,10 @@ export default function App() {
     });
 
     setTracks(nextTracks);
+    setPitchSemitones(0);
+    appliedPitchRef.current = 0;
+    pitchReqIdRef.current += 1;
+    setIsPitchShifting(false);
     setDuration(maxDur);
     setCurrentTime(0);
     showToast(`${nextTracks.length}개 스템 분리가 완료되었습니다!`);
@@ -336,12 +397,23 @@ export default function App() {
     );
   };
 
+  const handlePitchStep = (delta: number) => {
+    setPitchSemitones((prev) => Math.max(-12, Math.min(12, prev + delta)));
+  };
+
   const handleExportSingle = async (track: StemTrackState) => {
     const base = inputPath ? inputPath.split(/[\\/]/).pop()?.replace(/\.[^.]+$/, '') : 'track';
+    const keySuffix =
+      pitchSemitones !== 0 && track.id !== 'drums'
+        ? `_${pitchSemitones > 0 ? `+${pitchSemitones}` : pitchSemitones}key`
+        : '';
     const res = await window.musicSplitter.exportSingleStem({
       sourcePath: track.path,
-      defaultName: `${base}_${track.id}`,
-      format
+      defaultName: `${base}_${track.id}${keySuffix}`,
+      format,
+      stemId: track.id,
+      pitchSemitones,
+      sessionDir: sessionDir || undefined
     });
     if (res.ok) showToast(`${track.name} 저장 완료!`);
   };
@@ -350,7 +422,9 @@ export default function App() {
     if (tracks.length === 0) return;
     const res = await window.musicSplitter.exportAllStems({
       stems: tracks.map((t) => ({ id: t.id, name: t.name, path: t.path, format: t.format })),
-      format
+      format,
+      pitchSemitones,
+      sessionDir: sessionDir || undefined
     });
     if (res.ok && res.targetDir) {
       showToast('모든 스템을 폴더에 저장했습니다!');
@@ -361,7 +435,7 @@ export default function App() {
   const handleExportCustomMix = async () => {
     const active = tracks
       .filter((t) => (anySolo ? t.solo && !t.muted : !t.muted) && t.volume > 0)
-      .map((t) => ({ path: t.path, volume: t.volume * masterVolume }));
+      .map((t) => ({ id: t.id, path: t.path, volume: t.volume * masterVolume }));
 
     if (active.length === 0) {
       setErrorMsg('내보낼 활성 트랙이 없습니다. 최소 1개 트랙의 음소거를 해제하세요.');
@@ -369,10 +443,14 @@ export default function App() {
     }
 
     const base = inputPath ? inputPath.split(/[\\/]/).pop()?.replace(/\.[^.]+$/, '') : 'mix';
+    const keySuffix =
+      pitchSemitones !== 0 ? `_${pitchSemitones > 0 ? `+${pitchSemitones}` : pitchSemitones}key` : '';
     const res = await window.musicSplitter.exportCustomMix({
       stems: active,
       format,
-      defaultName: base || 'mix'
+      defaultName: `${base || 'mix'}${keySuffix}`,
+      pitchSemitones,
+      sessionDir: sessionDir || undefined
     });
     if (res.ok) showToast('커스텀 믹스 내보내기 완료!');
     else if (res.error) setErrorMsg(res.error);
@@ -646,6 +724,49 @@ export default function App() {
               >
                 MR(반주)만 듣기
               </button>
+
+              {/* Global Key / Pitch Shift Control (Drums Excluded) */}
+              <div
+                className="flex items-center gap-1.5 ml-2 pl-3 border-l border-daw-border"
+                title="전체 키(반음) 조절 - 드럼 트랙은 제외됩니다"
+              >
+                <Music2 className="w-3.5 h-3.5 text-violet-400" />
+                <span className="text-xs font-semibold text-zinc-400">키:</span>
+                <div className="flex items-center rounded-md bg-daw-surface border border-daw-border overflow-hidden">
+                  <button
+                    onClick={() => handlePitchStep(-1)}
+                    disabled={tracks.length === 0 || pitchSemitones <= -12}
+                    className="px-2 py-1 text-zinc-300 hover:bg-daw-hover hover:text-white disabled:opacity-35 transition-colors"
+                    title="반음 내리기 (-1)"
+                  >
+                    <Minus className="w-3 h-3" />
+                  </button>
+                  <button
+                    onClick={() => setPitchSemitones(0)}
+                    disabled={tracks.length === 0 || pitchSemitones === 0}
+                    className={`min-w-[46px] px-1.5 py-1 text-xs font-mono font-semibold text-center transition-colors flex items-center justify-center gap-1 ${
+                      pitchSemitones !== 0
+                        ? 'text-violet-300 bg-violet-500/15 hover:bg-violet-500/25'
+                        : 'text-zinc-400'
+                    }`}
+                    title="클릭하여 원래 키(0)로 초기화"
+                  >
+                    {isPitchShifting ? (
+                      <Loader2 className="w-3 h-3 animate-spin text-violet-400" />
+                    ) : (
+                      <span>{pitchSemitones > 0 ? `+${pitchSemitones}` : pitchSemitones}</span>
+                    )}
+                  </button>
+                  <button
+                    onClick={() => handlePitchStep(1)}
+                    disabled={tracks.length === 0 || pitchSemitones >= 12}
+                    className="px-2 py-1 text-zinc-300 hover:bg-daw-hover hover:text-white disabled:opacity-35 transition-colors"
+                    title="반음 올리기 (+1)"
+                  >
+                    <Plus className="w-3 h-3" />
+                  </button>
+                </div>
+              </div>
             </div>
 
             <div className="flex items-center gap-2">
@@ -716,6 +837,7 @@ export default function App() {
                     track={track}
                     effectivelyMuted={effectivelyMuted}
                     progress={playProgress}
+                    pitchSemitones={pitchSemitones}
                     onToggleMute={handleToggleMute}
                     onToggleSolo={handleToggleSolo}
                     onVolumeChange={handleVolumeChange}

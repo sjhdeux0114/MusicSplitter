@@ -72,6 +72,39 @@ export class MultiTrackAudioEngine {
     return infoMap;
   }
 
+  async updateTrackBuffers(
+    updates: Array<{ id: string; buffer: ArrayBuffer }>
+  ): Promise<void> {
+    if (updates.length === 0) return;
+    const ctx = this.ensureContext();
+    const wasPlaying = this.isPlaying;
+    const currentPos = this.getCurrentTime();
+
+    const decodedEntries = await Promise.all(
+      updates.map(async (item) => {
+        const decoded = await ctx.decodeAudioData(item.buffer.slice(0));
+        return { id: item.id, decoded };
+      })
+    );
+
+    if (wasPlaying) {
+      this.stopSources();
+      this.isPlaying = false;
+    }
+    this.pauseOffset = currentPos;
+
+    for (const { id, decoded } of decodedEntries) {
+      const node = this.tracks.get(id);
+      if (node) {
+        node.buffer = decoded;
+      }
+    }
+
+    if (wasPlaying) {
+      this.play(currentPos);
+    }
+  }
+
   setMasterVolume(vol: number): void {
     if (this.masterGain && this.ctx) {
       this.masterGain.gain.setTargetAtTime(vol, this.ctx.currentTime, 0.015);

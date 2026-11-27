@@ -17,6 +17,7 @@ interface StemTrackRowProps {
   track: StemTrackState;
   effectivelyMuted: boolean;
   progress: number;
+  pitchSemitones?: number;
   onToggleMute: (id: string) => void;
   onToggleSolo: (id: string) => void;
   onVolumeChange: (id: string, volume: number) => void;
@@ -58,6 +59,7 @@ export const StemTrackRow: React.FC<StemTrackRowProps> = ({
   track,
   effectivelyMuted,
   progress,
+  pitchSemitones = 0,
   onToggleMute,
   onToggleSolo,
   onVolumeChange,
@@ -65,6 +67,7 @@ export const StemTrackRow: React.FC<StemTrackRowProps> = ({
   onExportSingle
 }) => {
   const volPercent = Math.round(track.volume * 100);
+  const isPitchApplied = pitchSemitones !== 0 && track.id !== 'drums';
 
   return (
     <div
@@ -88,8 +91,13 @@ export const StemTrackRow: React.FC<StemTrackRowProps> = ({
               <div className="text-sm font-semibold text-zinc-100 truncate">
                 {getKoreanLabel(track.id, track.name)}
               </div>
-              <div className="text-[11px] text-zinc-400 uppercase font-mono">
-                {track.format}
+              <div className="text-[11px] text-zinc-400 uppercase font-mono flex items-center gap-1.5">
+                <span>{track.format}</span>
+                {isPitchApplied && (
+                  <span className="px-1 py-0.2 rounded bg-violet-500/20 text-violet-300 border border-violet-500/30 normal-case text-[10px]">
+                    {pitchSemitones > 0 ? `+${pitchSemitones}` : pitchSemitones} Key
+                  </span>
+                )}
               </div>
             </div>
           </div>

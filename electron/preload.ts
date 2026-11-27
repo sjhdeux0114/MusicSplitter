@@ -67,23 +67,37 @@ contextBridge.exposeInMainWorld('musicSplitter', {
     return () => ipcRenderer.removeListener('separation-progress', listener);
   },
 
+  pitchShiftStems: (params: {
+    stems: Array<{ id: string; path: string }>;
+    semitones: number;
+    sessionDir?: string;
+  }): Promise<{ ok: boolean; results?: Array<{ id: string; path: string }>; error?: string }> =>
+    ipcRenderer.invoke('pitch-shift-stems', params),
+
   exportSingleStem: (params: {
     sourcePath: string;
     defaultName: string;
     format: AudioFormat;
+    stemId?: string;
+    pitchSemitones?: number;
+    sessionDir?: string;
   }): Promise<{ ok: boolean; savedPath?: string; canceled?: boolean }> =>
     ipcRenderer.invoke('export-single-stem', params),
 
   exportAllStems: (params: {
     stems: StemResult[];
     format: AudioFormat;
+    pitchSemitones?: number;
+    sessionDir?: string;
   }): Promise<{ ok: boolean; targetDir?: string; canceled?: boolean }> =>
     ipcRenderer.invoke('export-all-stems', params),
 
   exportCustomMix: (params: {
-    stems: Array<{ path: string; volume: number }>;
+    stems: Array<{ id?: string; path: string; volume: number }>;
     format: AudioFormat;
     defaultName: string;
+    pitchSemitones?: number;
+    sessionDir?: string;
   }): Promise<{ ok: boolean; savedPath?: string; canceled?: boolean; error?: string }> =>
     ipcRenderer.invoke('export-custom-mix', params),
 

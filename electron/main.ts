@@ -457,6 +457,111 @@ ipcMain.handle('cancel-separation', async () => {
   }
 });
 
+const pitchJobs = new Map<string, Promise<string>>();
+let rubberbandSupported: boolean | null = null;
+
+async function isRubberbandSupported(): Promise<boolean> {
+  if (rubberbandSupported !== null) return rubberbandSupported;
+  try {
+    const { stdout } = await execFileAsync(FFMPEG_BIN, ['-filters'], { timeout: 5000 });
+    rubberbandSupported = /\brubberband\b/.test(stdout);
+  } catch {
+    rubberbandSupported = false;
+  }
+  return rubberbandSupported;
+}
+
+function buildPitchFilter(semitones: number, stemId: string, useRubberband: boolean): string {
+  const ratio = Math.pow(2, semitones / 12);
+  if (useRubberband) {
+    const formant = stemId === 'vocals' ? ':formant=preserved' : '';
+    return `rubberband=pitch=${ratio.toFixed(8)}:channels=together${formant}`;
+  }
+  // Fallback for ffmpeg builds without librubberband (ratio is in [0.5, 2.0] for -12..+12 semitones)
+  const invRatio = 1 / ratio;
+  return `aresample=44100,asetrate=${(44100 * ratio).toFixed(4)},aresample=44100,atempo=${invRatio.toFixed(8)}`;
+}
+
+async function getOrCreatePitchedStemFile(
+  sourcePath: string,
+  stemId: string,
+  semitones: number,
+  sessionDir?: string
+): Promise<string> {
+  if (!semitones || semitones === 0 || stemId === 'drums') {
+    return sourcePath;
+  }
+
+  const baseRoot = sessionDir || path.dirname(sourcePath);
+  const cacheDir = path.join(baseRoot, '.pitch_cache', `st_${semitones}`);
+  await fs.promises.mkdir(cacheDir, { recursive: true });
+
+  const baseName = path.basename(sourcePath, path.extname(sourcePath));
+  const cachedPath = path.join(cacheDir, `${baseName}.wav`);
+
+  if (fs.existsSync(cachedPath)) {
+    const stat = await fs.promises.stat(cachedPath);
+    if (stat.size > 0) return cachedPath;
+  }
+
+  const jobKey = `${sourcePath}::${stemId}::${semitones}`;
+  const existingJob = pitchJobs.get(jobKey);
+  if (existingJob) return existingJob;
+
+  const job = (async () => {
+    const tmpPath = path.join(cacheDir, `${baseName}.${Date.now()}.tmp.wav`);
+    const useRubberband = await isRubberbandSupported();
+    const filter = buildPitchFilter(semitones, stemId, useRubberband);
+    try {
+      await execFileAsync(
+        FFMPEG_BIN,
+        ['-y', '-i', sourcePath, '-af', filter, '-c:a', 'pcm_s24le', tmpPath],
+        { timeout: 180000 }
+      );
+      await fs.promises.rename(tmpPath, cachedPath);
+      return cachedPath;
+    } catch (err) {
+      await fs.promises.rm(tmpPath, { force: true }).catch(() => {});
+      throw err;
+    } finally {
+      pitchJobs.delete(jobKey);
+    }
+  })();
+
+  pitchJobs.set(jobKey, job);
+  return job;
+}
+
+ipcMain.handle(
+  'pitch-shift-stems',
+  async (
+    _ev,
+    params: {
+      stems: Array<{ id: string; path: string }>;
+      semitones: number;
+      sessionDir?: string;
+    }
+  ) => {
+    try {
+      const results = await Promise.all(
+        params.stems.map(async (stem) => {
+          const resolvedPath = await getOrCreatePitchedStemFile(
+            stem.path,
+            stem.id,
+            params.semitones,
+            params.sessionDir
+          );
+          return { id: stem.id, path: resolvedPath };
+        })
+      );
+      return { ok: true, results };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { ok: false, error: msg };
+    }
+  }
+);
+
 async function encodeFileWithFfmpeg(sourcePath: string, targetPath: string, format: string): Promise<void> {
   const ext = path.extname(sourcePath).slice(1).toLowerCase();
   if (ext === format.toLowerCase()) {
@@ -481,7 +586,17 @@ async function encodeFileWithFfmpeg(sourcePath: string, targetPath: string, form
 
 ipcMain.handle(
   'export-single-stem',
-  async (_ev, params: { sourcePath: string; defaultName: string; format: string }) => {
+  async (
+    _ev,
+    params: {
+      sourcePath: string;
+      defaultName: string;
+      format: string;
+      stemId?: string;
+      pitchSemitones?: number;
+      sessionDir?: string;
+    }
+  ) => {
     if (!mainWindow) return { ok: false, canceled: true };
     const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
       title: '트랙 내보내기',
@@ -489,14 +604,28 @@ ipcMain.handle(
       filters: [{ name: `${params.format.toUpperCase()} Audio`, extensions: [params.format] }]
     });
     if (canceled || !filePath) return { ok: false, canceled: true };
-    await encodeFileWithFfmpeg(params.sourcePath, filePath, params.format);
+    const effectiveSource = await getOrCreatePitchedStemFile(
+      params.sourcePath,
+      params.stemId || '',
+      params.pitchSemitones || 0,
+      params.sessionDir
+    );
+    await encodeFileWithFfmpeg(effectiveSource, filePath, params.format);
     return { ok: true, savedPath: filePath };
   }
 );
 
 ipcMain.handle(
   'export-all-stems',
-  async (_ev, params: { stems: Array<{ id: string; name: string; path: string }>; format: string }) => {
+  async (
+    _ev,
+    params: {
+      stems: Array<{ id: string; name: string; path: string }>;
+      format: string;
+      pitchSemitones?: number;
+      sessionDir?: string;
+    }
+  ) => {
     if (!mainWindow) return { ok: false, canceled: true };
     const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
       title: '모든 스템을 저장할 폴더 선택',
@@ -504,10 +633,21 @@ ipcMain.handle(
     });
     if (canceled || filePaths.length === 0) return { ok: false, canceled: true };
     const targetDir = filePaths[0];
+    const semitones = params.pitchSemitones || 0;
     for (const stem of params.stems) {
       const base = path.basename(stem.path, path.extname(stem.path));
-      const outPath = path.join(targetDir, `${base}.${params.format}`);
-      await encodeFileWithFfmpeg(stem.path, outPath, params.format);
+      const keySuffix =
+        semitones !== 0 && stem.id !== 'drums'
+          ? `_${semitones > 0 ? `+${semitones}` : semitones}key`
+          : '';
+      const outPath = path.join(targetDir, `${base}${keySuffix}.${params.format}`);
+      const effectiveSource = await getOrCreatePitchedStemFile(
+        stem.path,
+        stem.id,
+        semitones,
+        params.sessionDir
+      );
+      await encodeFileWithFfmpeg(effectiveSource, outPath, params.format);
     }
     return { ok: true, targetDir };
   }
@@ -518,9 +658,11 @@ ipcMain.handle(
   async (
     _ev,
     params: {
-      stems: Array<{ path: string; volume: number }>;
+      stems: Array<{ id?: string; path: string; volume: number }>;
       format: string;
       defaultName: string;
+      pitchSemitones?: number;
+      sessionDir?: string;
     }
   ) => {
     if (!mainWindow) return { ok: false, canceled: true };
@@ -534,23 +676,36 @@ ipcMain.handle(
     });
     if (canceled || !filePath) return { ok: false, canceled: true };
 
+    const semitones = params.pitchSemitones || 0;
+    const resolvedStems = await Promise.all(
+      params.stems.map(async (s) => ({
+        ...s,
+        effectivePath: await getOrCreatePitchedStemFile(
+          s.path,
+          s.id || '',
+          semitones,
+          params.sessionDir
+        )
+      }))
+    );
+
     const args: string[] = ['-y'];
-    for (const s of params.stems) {
-      args.push('-i', s.path);
+    for (const s of resolvedStems) {
+      args.push('-i', s.effectivePath);
     }
 
     const filterParts: string[] = [];
     const mixInputs: string[] = [];
-    params.stems.forEach((s, idx) => {
+    resolvedStems.forEach((s, idx) => {
       const label = `a${idx}`;
       filterParts.push(`[${idx}:a]volume=${s.volume.toFixed(3)}[${label}]`);
       mixInputs.push(`[${label}]`);
     });
 
-    if (params.stems.length === 1) {
+    if (resolvedStems.length === 1) {
       args.push('-filter_complex', `${filterParts[0]}`, '-map', '[a0]');
     } else {
-      filterParts.push(`${mixInputs.join('')}amix=inputs=${params.stems.length}:duration=longest:normalize=0[out]`);
+      filterParts.push(`${mixInputs.join('')}amix=inputs=${resolvedStems.length}:duration=longest:normalize=0[out]`);
       args.push('-filter_complex', filterParts.join(';'), '-map', '[out]');
     }
 
